@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
+import { jobStore } from '@/lib/jobStore';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -30,8 +30,8 @@ export default function Settings() {
   const load = async () => {
     setLoading(true);
     const [settings, jobs] = await Promise.all([
-      base44.entities.UserSetting.list('-created_date', 1),
-      base44.entities.RewriteJob.list('-created_date', 200),
+      jobStore.UserSetting.list('-created_date', 1),
+      jobStore.RewriteJob.list('-created_date', 200),
     ]);
     const setting = settings?.[0];
     if (setting) {
@@ -41,7 +41,7 @@ export default function Settings() {
     }
     setSummary({
       jobs: jobs.length,
-      words: jobs.reduce((total, job) => total + (job.source_words || 0) + (job.result_words || 0), 0),
+      words: jobs.reduce((t, j) => t + (j.source_words || 0) + (j.result_words || 0), 0),
     });
     setLoading(false);
   };
@@ -55,9 +55,9 @@ export default function Settings() {
     setMessage('');
     try {
       if (settingId) {
-        await base44.entities.UserSetting.update(settingId, { retention_days: retention });
+        await jobStore.UserSetting.update(settingId, { retention_days: retention });
       } else {
-        const created = await base44.entities.UserSetting.create({ retention_days: retention });
+        const created = await jobStore.UserSetting.create({ retention_days: retention });
         setSettingId(created.id);
       }
       setSavedRetention(retention);
@@ -70,8 +70,7 @@ export default function Settings() {
   const wipe = async () => {
     setWiping(true);
     try {
-      const me = await base44.auth.me();
-      await base44.entities.RewriteJob.deleteMany({ created_by_id: me.id });
+      await jobStore.RewriteJob.deleteMany({ created_by_id: 'local' });
       setMessage('Every rewrite, tracked change and audit report has been deleted.');
       await load();
     } finally {
@@ -100,12 +99,11 @@ export default function Settings() {
         <div className="rounded-2xl border border-border/80 bg-card p-6">
           <p className="eyebrow">Retention</p>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            Applies to new rewrites. Expired ones are deleted automatically when you open your
-            history.
+            Applies to new rewrites. Expired ones are deleted automatically when you open your history.
           </p>
           <RadioGroup
             value={String(retention)}
-            onValueChange={(value) => setRetention(Number(value))}
+            onValueChange={(v) => setRetention(Number(v))}
             className="mt-5 space-y-3"
           >
             {RETENTION_OPTIONS.map((option) => (
@@ -123,7 +121,7 @@ export default function Settings() {
             onClick={save}
             disabled={saving || loading || retention === savedRetention}
           >
-            {saving ? 'Saving' : retention === savedRetention ? 'Saved' : 'Save retention window'}
+            {saving ? 'Saving…' : retention === savedRetention ? 'Saved' : 'Save retention window'}
           </Button>
         </div>
 
@@ -145,27 +143,28 @@ export default function Settings() {
               </div>
             </dl>
             <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-              Files you open are read in your browser and never uploaded.
+              All data is stored locally in your browser. Files you open are read locally and never
+              uploaded.
             </p>
           </div>
 
           <div className="rounded-2xl border border-destructive/35 bg-destructive/5 p-6">
             <p className="eyebrow text-destructive">Delete everything</p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              Removes every rewrite, tracked change, audit report and the retention setting from the
-              database immediately, not on a later sweep.
+              Removes every rewrite, tracked change and audit report from your browser immediately.
             </p>
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" className="mt-4" disabled={wiping}>
-                  {wiping ? 'Deleting' : 'Delete all my data'}
+                  {wiping ? 'Deleting…' : 'Delete all my data'}
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>Delete all your data?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    Every rewrite and audit report is removed immediately and cannot be recovered.
+                    Every rewrite and audit report is removed immediately from your browser and cannot
+                    be recovered.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -177,13 +176,8 @@ export default function Settings() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            <Link to="/terms" className="underline underline-offset-4">
-              Terms
-            </Link>{' '}
-            ·{' '}
-            <Link to="/privacy" className="underline underline-offset-4">
-              Privacy
-            </Link>
+            <Link to="/terms" className="underline underline-offset-4">Terms</Link>{' '}·{' '}
+            <Link to="/privacy" className="underline underline-offset-4">Privacy</Link>
           </p>
         </div>
       </section>

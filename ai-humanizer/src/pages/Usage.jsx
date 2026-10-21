@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { base44 } from '@/api/base44Client';
+import { jobStore } from '@/lib/jobStore';
 import { summarizeUsage } from '@/lib/usage';
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 
@@ -18,7 +18,7 @@ export default function Usage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    base44.entities.RewriteJob.list('-created_date', 200)
+    jobStore.RewriteJob.list('-created_date', 200)
       .then(setJobs)
       .catch(() => setJobs([]))
       .finally(() => setLoading(false));

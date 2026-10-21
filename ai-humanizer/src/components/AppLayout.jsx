@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
 import { Button } from '@/components/ui/button';
-import { Check, LogOut, Menu, X } from 'lucide-react';
+import { Check, Menu, X } from 'lucide-react';
 
 const NAV = [
   { to: '/editor', label: 'Rewrite' },
@@ -12,15 +11,7 @@ const NAV = [
 ];
 
 export default function AppLayout() {
-  const [user, setUser] = useState(null);
   const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    base44.auth
-      .me()
-      .then(setUser)
-      .catch(() => setUser(null));
-  }, []);
 
   const linkClass = ({ isActive }) =>
     [
@@ -47,19 +38,15 @@ export default function AppLayout() {
             ))}
           </nav>
 
-          <div className="hidden items-center gap-3 md:flex">
-            <span className="text-sm text-muted-foreground">{user?.full_name || user?.email || ''}</span>
-            <Button variant="ghost" size="sm" onClick={() => base44.auth.logout('/login')}>
-              <LogOut className="mr-1.5 h-3.5 w-3.5" /> Sign out
-            </Button>
-          </div>
+          {/* No user account in this deployment */}
+          <div className="hidden md:block" />
 
           <Button
             variant="ghost"
             size="icon"
             className="md:hidden"
             aria-label="Menu"
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => setOpen((v) => !v)}
           >
             {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
@@ -78,14 +65,6 @@ export default function AppLayout() {
                   {item.label}
                 </NavLink>
               ))}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="justify-start px-3 text-muted-foreground"
-                onClick={() => base44.auth.logout('/login')}
-              >
-                <LogOut className="mr-1.5 h-3.5 w-3.5" /> Sign out
-              </Button>
             </nav>
           </div>
         ) : null}
@@ -101,7 +80,6 @@ export default function AppLayout() {
             <Check className="h-3.5 w-3.5" />
             Facts, numbers, names and citations are audited on every job. Nothing is used for training.
           </p>
-          <p>{user?.email || ''}</p>
         </div>
       </footer>
     </div>

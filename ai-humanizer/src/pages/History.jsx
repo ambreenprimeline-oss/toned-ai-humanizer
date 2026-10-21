@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
+import { jobStore } from '@/lib/jobStore';
 import { Button } from '@/components/ui/button';
 import HistoryRow from '@/components/history/HistoryRow';
 
@@ -13,17 +13,15 @@ export default function History() {
     setLoading(true);
     setError('');
     try {
-      const me = await base44.auth.me();
-      // Retention sweep: this user's expired rewrites are removed before anything renders.
+      // Retention sweep: remove expired jobs before rendering.
       try {
-        await base44.entities.RewriteJob.deleteMany({
-          created_by_id: me.id,
+        await jobStore.RewriteJob.deleteMany({
           expires_at: { $lt: new Date().toISOString() },
         });
       } catch {
-        // best effort - a failed sweep must not hide the saved rewrites
+        // best-effort — a failed sweep must not hide saved rewrites
       }
-      const rows = await base44.entities.RewriteJob.list('-created_date', 100);
+      const rows = await jobStore.RewriteJob.list('-created_date', 100);
       setJobs(rows);
     } catch (loadError) {
       setError(loadError.message || 'Your history could not be loaded.');

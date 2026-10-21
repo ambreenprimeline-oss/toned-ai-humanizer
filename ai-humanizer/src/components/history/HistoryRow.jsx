@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
+import { jobStore } from '@/lib/jobStore';
 import { Button } from '@/components/ui/button';
 import JobStatusBadge from '@/components/JobStatusBadge';
 import {
@@ -23,7 +23,7 @@ export default function HistoryRow({ job, onDeleted }) {
   const remove = async () => {
     setBusy(true);
     try {
-      await base44.entities.RewriteJob.delete(job.id);
+      await jobStore.RewriteJob.delete(job.id);
       onDeleted(job.id);
     } finally {
       setBusy(false);

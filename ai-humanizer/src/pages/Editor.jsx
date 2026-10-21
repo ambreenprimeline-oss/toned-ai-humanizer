@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
+import { jobStore } from '@/lib/jobStore';
 import { createJob, readTextFile, runPipeline } from '@/lib/humanize';
 import { buildReview, composeReview } from '@/lib/diff';
 import InputPane from '@/components/editor/InputPane';
@@ -34,8 +34,9 @@ export default function Editor() {
 
   const jobId = searchParams.get('job');
 
+  // Load saved retention preference
   useEffect(() => {
-    base44.entities.UserSetting.list('-created_date', 1)
+    jobStore.UserSetting.list('-created_date', 1)
       .then((rows) => {
         const stored = rows?.[0]?.retention_days;
         if (stored !== undefined && stored !== null) setRetention(stored);
@@ -43,6 +44,7 @@ export default function Editor() {
       .catch(() => {});
   }, []);
 
+  // Load a job from localStorage when ?job= param is present
   useEffect(() => {
     if (!jobId) {
       setJob(null);
@@ -50,7 +52,7 @@ export default function Editor() {
     }
     let active = true;
     setLoading(true);
-    base44.entities.RewriteJob.get(jobId)
+    jobStore.RewriteJob.get(jobId)
       .then((record) => {
         if (active) {
           setJob(record);
@@ -63,9 +65,7 @@ export default function Editor() {
       .finally(() => {
         if (active) setLoading(false);
       });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [jobId]);
 
   const review = useMemo(
@@ -77,7 +77,7 @@ export default function Editor() {
     [review, decisions, job],
   );
 
-  const update = (patch) => setForm((current) => ({ ...current, ...patch }));
+  const update = (patch) => setForm((c) => ({ ...c, ...patch }));
 
   const handleRun = async () => {
     setError('');
@@ -88,7 +88,9 @@ export default function Editor() {
       return;
     }
     if (form.text.length > MAX_CHARS) {
-      setError(`That document is ${form.text.length.toLocaleString()} characters; the limit is ${MAX_CHARS.toLocaleString()}.`);
+      setError(
+        `That document is ${form.text.length.toLocaleString()} characters; the limit is ${MAX_CHARS.toLocaleString()}.`,
+      );
       return;
     }
 
@@ -109,32 +111,32 @@ export default function Editor() {
       setJob(created);
       setSearchParams({ job: created.id }, { replace: true });
 
-      const result = await runPipeline(created.id, ({ stage: nextStage, progress: nextProgress }) => {
-        setStage(nextStage);
-        setProgress(nextProgress);
+      const result = await runPipeline(created.id, ({ stage: s, progress: p }) => {
+        setStage(s);
+        setProgress(p);
       });
 
       if (result.refused) {
         setRefusal(result.reason);
-        setJob(await base44.entities.RewriteJob.get(created.id));
+        setJob(await jobStore.RewriteJob.get(created.id));
         return;
       }
 
       if (retention === 0) {
         const finished = result.job;
-        await base44.entities.RewriteJob.delete(created.id);
+        await jobStore.RewriteJob.delete(created.id);
         setSearchParams({}, { replace: true });
         setJob({ ...finished, id: created.id, retention_days: 0 });
       } else {
-        setJob(result.job || (await base44.entities.RewriteJob.get(created.id)));
+        setJob(result.job || (await jobStore.RewriteJob.get(created.id)));
       }
     } catch (runError) {
       const message = runError.message || 'The rewrite failed.';
       setError(message);
       if (created) {
         try {
-          await base44.entities.RewriteJob.update(created.id, { status: 'failed', error: message });
-          setJob(await base44.entities.RewriteJob.get(created.id));
+          await jobStore.RewriteJob.update(created.id, { status: 'failed', error: message });
+          setJob(await jobStore.RewriteJob.get(created.id));
         } catch {
           setJob(null);
         }
@@ -189,7 +191,6 @@ export default function Editor() {
       ) : null}
 
       {loading ? <p className="text-sm text-muted-foreground">Loading that rewrite…</p> : null}
-
       {running ? <StageProgress stage={stage} progress={progress} /> : null}
 
       {showResult ? (
@@ -198,11 +199,11 @@ export default function Editor() {
           review={review}
           decisions={decisions}
           onToggle={(id) =>
-            setDecisions((current) => ({ ...current, [id]: current[id] === false ? true : false }))
+            setDecisions((c) => ({ ...c, [id]: c[id] === false ? true : false }))
           }
           onAll={(accept) =>
             setDecisions(
-              accept ? {} : Object.fromEntries(review.changes.map((change) => [change.id, false])),
+              accept ? {} : Object.fromEntries(review.changes.map((ch) => [ch.id, false])),
             )
           }
           text={text}
@@ -219,7 +220,13 @@ export default function Editor() {
             onError={setError}
             maxChars={MAX_CHARS}
           />
-          <ControlPane value={form} onChange={update} onRun={handleRun} running={running} retentionDays={retention} />
+          <ControlPane
+            value={form}
+            onChange={update}
+            onRun={handleRun}
+            running={running}
+            retentionDays={retention}
+          />
         </div>
       ) : null}
     </div>

@@ -1,6 +1,4 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
 import SiteHeader from '@/components/SiteHeader';
 import Hero from '@/components/landing/Hero';
 import DemoCompare from '@/components/landing/DemoCompare';
@@ -9,19 +7,10 @@ import StyleGrid from '@/components/landing/StyleGrid';
 import PrivacyBand from '@/components/landing/PrivacyBand';
 
 export default function Landing() {
-  const [isAuthed, setIsAuthed] = useState(false);
-
-  useEffect(() => {
-    base44.auth
-      .isAuthenticated()
-      .then(setIsAuthed)
-      .catch(() => setIsAuthed(false));
-  }, []);
-
   return (
     <div className="min-h-screen bg-background">
-      <SiteHeader isAuthed={isAuthed} />
-      <Hero isAuthed={isAuthed} />
+      <SiteHeader isAuthed={false} />
+      <Hero isAuthed={false} />
       <DemoCompare />
       <StageList />
       <StyleGrid />

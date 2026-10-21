@@ -1,24 +1,38 @@
-import { base44 } from '@/api/base44Client';
+/**
+ * Pipeline orchestrator — calls Vercel API routes instead of Base44 functions.
+ * The job object lives in localStorage (via jobStore) and is passed to the
+ * serverless function on every call. The returned `patch` is merged back.
+ */
+import { jobStore } from '@/lib/jobStore';
 import { countWords } from '@/lib/diff';
 
 const MAX_REPAIR_LOOPS = 2;
 
 export async function callStage(jobId, stage, extra = {}) {
-  try {
-    const response = await base44.functions.invoke('runRewriteStage', {
-      job_id: jobId,
-      stage,
-      ...extra,
-    });
-    const data = (response && response.data) || {};
-    if (data.error) throw new Error(data.error);
-    return data;
-  } catch (error) {
-    // Prefer the pipeline's own message (usage limit, cost guard, refusal) over
-    // the generic request failure the transport reports.
-    const serverMessage = error?.response?.data?.error;
-    throw new Error(serverMessage || error?.message || 'The rewrite could not be completed.');
+  // Always fetch the freshest copy so we send up-to-date state.
+  const job = await jobStore.RewriteJob.get(jobId);
+
+  const res = await fetch('/api/run-stage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ job, stage, ...extra }),
+  });
+
+  const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+
+  if (!res.ok) {
+    const serverMessage = data?.error;
+    throw new Error(serverMessage || `Stage "${stage}" failed (${res.status})`);
   }
+
+  if (data.error) throw new Error(data.error);
+
+  // Merge the patch back into localStorage so future calls see the latest state.
+  if (data.patch && Object.keys(data.patch).length > 0) {
+    await jobStore.RewriteJob.update(jobId, data.patch);
+  }
+
+  return data;
 }
 
 export function expiresAtFrom(retentionDays) {
@@ -32,14 +46,14 @@ export function titleFrom(text, filename) {
   if (filename) return filename;
   const firstLine = String(text || '')
     .split('\n')
-    .map((line) => line.trim())
+    .map((l) => l.trim())
     .filter(Boolean)[0];
   if (!firstLine) return 'Untitled rewrite';
   return firstLine.length > 72 ? `${firstLine.slice(0, 69)}...` : firstLine;
 }
 
 export async function createJob({ text, style, customStyle, purpose, prefs, retentionDays, filename }) {
-  return base44.entities.RewriteJob.create({
+  return jobStore.RewriteJob.create({
     title: titleFrom(text, filename),
     source_text: text,
     source_words: countWords(text),
@@ -57,21 +71,20 @@ export async function createJob({ text, style, customStyle, purpose, prefs, rete
 }
 
 /**
- * Drives the five-stage pipeline one short request at a time, so progress is
- * visible and a retry can resume rather than start over. Every stage is
- * idempotent: re-invoking a completed stage returns the stored result.
+ * Drives the pipeline one stage at a time.
+ * Each stage is idempotent — re-invoking a completed stage returns cached data.
  */
 export async function runPipeline(jobId, onUpdate = () => {}) {
   const extract = await callStage(jobId, 'extract');
   if (extract.refused) return { refused: true, reason: extract.reason };
   onUpdate({ stage: 'extract', progress: extract.progress || 15 });
 
-  const diagnose = await callStage(jobId, 'diagnose');
-  onUpdate({ stage: 'diagnose', progress: diagnose.progress || 25 });
+  await callStage(jobId, 'diagnose');
+  onUpdate({ stage: 'diagnose', progress: 25 });
 
   const chunkCount = extract.chunk_count || 1;
-  for (let index = 0; index < chunkCount; index += 1) {
-    const rewritten = await callStage(jobId, 'rewrite', { chunk_index: index });
+  for (let i = 0; i < chunkCount; i++) {
+    const rewritten = await callStage(jobId, 'rewrite', { chunk_index: i });
     onUpdate({ stage: 'rewrite', progress: rewritten.progress || 40 });
   }
 
@@ -85,15 +98,18 @@ export async function runPipeline(jobId, onUpdate = () => {}) {
   while (audit.has_problems && loops < MAX_REPAIR_LOOPS) {
     await callStage(jobId, 'repair');
     audit = await callStage(jobId, 'audit');
-    loops += 1;
+    loops++;
     onUpdate({ stage: 'audit', progress: audit.progress || 85 });
   }
 
   const final = await callStage(jobId, 'finalize');
   onUpdate({ stage: 'finalize', progress: 100 });
+
+  // Return the fully-updated job from localStorage.
+  const job = await jobStore.RewriteJob.get(jobId);
   return {
     refused: false,
-    job: final.job,
+    job,
     status: final.status,
     unresolved: final.unresolved_flags || [],
   };
@@ -104,7 +120,7 @@ const ACCEPTED_TYPES = ['.txt', '.md', '.markdown'];
 export function readTextFile(file) {
   return new Promise((resolve, reject) => {
     const name = String(file?.name || '').toLowerCase();
-    if (!ACCEPTED_TYPES.some((extension) => name.endsWith(extension))) {
+    if (!ACCEPTED_TYPES.some((ext) => name.endsWith(ext))) {
       reject(new Error('Only .txt and .md files can be read here. Paste .docx content instead.'));
       return;
     }
