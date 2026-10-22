@@ -56,43 +56,47 @@ async function postWithRetry(url, options) {
     : new LLMError('The model did not respond in time.', 'timeout', 504);
 }
 
-export async function anthropicComplete({ key, model, system, user, maxTokens, cache }) {
+/**
+ * Google Gemini via the v1beta generateContent endpoint.
+ * System prompt is passed as `system_instruction`, user text as a single
+ * `user` turn. Cache param is accepted but silently ignored (Gemini handles
+ * caching automatically for long prompts).
+ */
+export async function geminiComplete({ key, model, system, user, maxTokens }) {
   const started = Date.now();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const body = {
-    model,
-    max_tokens: maxTokens || 4000,
-    system: [
-      {
-        type: 'text',
-        text: system,
-        ...(cache ? { cache_control: { type: 'ephemeral' } } : {}),
-      },
-    ],
-    messages: [{ role: 'user', content: user }],
-  };
-  const payload = await postWithRetry('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31',
+    system_instruction: { parts: [{ text: system }] },
+    contents: [{ role: 'user', parts: [{ text: user }] }],
+    generationConfig: {
+      maxOutputTokens: maxTokens || 4000,
+      temperature: 1,
     },
+  };
+  const payload = await postWithRetry(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const text = (payload.content || [])
-    .map((block) => (block.type === 'text' ? block.text : ''))
+
+  const candidate = (payload.candidates || [])[0];
+  const text = (candidate?.content?.parts || [])
+    .map((p) => (typeof p.text === 'string' ? p.text : ''))
     .join('')
     .trim();
-  const usage = payload.usage || {};
+
+  const usage = payload.usageMetadata || {};
   return {
     text,
-    model: payload.model || model,
-    inputTokens: usage.input_tokens || 0,
-    outputTokens: usage.output_tokens || 0,
+    model,
+    inputTokens: usage.promptTokenCount || 0,
+    outputTokens: usage.candidatesTokenCount || 0,
     latencyMs: Date.now() - started,
   };
 }
+
+// Keep the old name as an alias so run-stage.js requires no changes.
+export const anthropicComplete = geminiComplete;
 
 // ─── JSON stage runner ────────────────────────────────────────────────────────
 

@@ -77,15 +77,15 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return res.status(500).json({
-      error: 'ANTHROPIC_API_KEY is not configured. Add it to your Vercel environment variables.',
+      error: 'GOOGLE_API_KEY is not configured. Add it to your Vercel environment variables.',
     });
   }
 
-  const modelFast = process.env.MODEL_FAST || 'claude-haiku-4-5-20251001';
-  const modelQuality = process.env.MODEL_QUALITY || 'claude-sonnet-4-5';
+  const modelFast = process.env.MODEL_FAST || 'gemini-2.0-flash';
+  const modelQuality = process.env.MODEL_QUALITY || 'gemini-2.5-pro';
   const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
   const maxJobTokens = Number(process.env.MAX_JOB_TOKENS) || 120000;
   const chunkWords = 800;
