@@ -25,7 +25,6 @@ import {
   AI_PATTERN_CATALOG,
   PROMPTS,
   REWRITE_SYSTEM,
-  SCHEMAS,
   STYLE_MODULES,
 } from './_prompts.js';
 
