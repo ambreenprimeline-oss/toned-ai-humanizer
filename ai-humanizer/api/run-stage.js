@@ -83,7 +83,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const modelFast = process.env.MODEL_FAST || 'gemini-2.0-flash';
+  const modelFast = process.env.MODEL_FAST || 'gemini-3.8-flash';
   const modelQuality = process.env.MODEL_QUALITY || 'gemini-2.5-pro';
   const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
   const maxJobTokens = Number(process.env.MAX_JOB_TOKENS) || 120000;
