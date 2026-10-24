@@ -14,13 +14,15 @@ export class LLMError extends Error {
   }
 }
 
-const BACKOFF_MS = [1000, 4000, 10000];
+// 2 attempts: fast abort at 90s each, 3s backoff between.
+// Total worst-case: 90s + 3s + 90s = 183s, well inside Vercel's 300s limit.
+const BACKOFF_MS = [3000, 5000];
 
 async function postWithRetry(url, options) {
   let lastError = null;
   for (let attempt = 0; attempt < BACKOFF_MS.length; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
+    const timer = setTimeout(() => controller.abort(), 90000);
     try {
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timer);
