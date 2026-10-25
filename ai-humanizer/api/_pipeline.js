@@ -3,7 +3,7 @@
  * Ported from the Base44 runtime-injected pipeline.ts.
  */
 
-// ─── LLM ─────────────────────────────────────────────────────────────────────
+// ─── LLM Error ────────────────────────────────────────────────────────────────
 
 export class LLMError extends Error {
   constructor(message, code, status) {
@@ -14,109 +14,343 @@ export class LLMError extends Error {
   }
 }
 
-// 3 attempts: abort at 150s each, with exponential backoff between.
-// Total worst-case: 150s + 5s + 150s + 10s + 150s = 465s.
-// Vercel Pro functions support up to 800s; Hobby plan is capped at 300s.
-// If you are on the Hobby plan, keep ATTEMPT_TIMEOUT_MS at 90_000 and MAX_ATTEMPTS at 2.
-const MAX_ATTEMPTS = 3;
-const ATTEMPT_TIMEOUT_MS = 150_000; // 150s — enough for gemini-2.5-pro on large chunks
-const BACKOFF_MS = [5000, 10000];   // wait between attempt 1→2 and 2→3
-
-async function postWithRetry(url, options) {
-  let lastError = null;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
-    try {
-      const response = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(timer);
-      if (response.status === 429 || response.status >= 500) {
-        lastError = new LLMError(
-          `Upstream model unavailable (${response.status})`,
-          'upstream_unavailable',
-          503,
-        );
-        if (attempt < MAX_ATTEMPTS - 1) {
-          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? BACKOFF_MS.at(-1)));
-        }
-        continue;
-      }
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new LLMError(
-          `Model request rejected (${response.status}): ${detail}`,
-          'request_rejected',
-          400,
-        );
-      }
-      return await response.json();
-    } catch (error) {
-      clearTimeout(timer);
-      if (error instanceof LLMError && error.code === 'request_rejected') throw error;
-      lastError = error;
-      if (attempt < MAX_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? BACKOFF_MS.at(-1)));
-      }
-    }
+// ─── Key Pool ─────────────────────────────────────────────────────────────────
+//
+// Round-robins across a list of API keys for a single provider.
+// On 429 or timeout the caller marks the key as failed; the pool then skips it
+// (up to 3 consecutive failures) and hands out the next available key.
+//
+// Usage:
+//   const pool = new KeyPool(['key1', 'key2', 'key3']);
+//   const key  = pool.next();       // advances the cursor each call
+//   pool.markFailed(key);           // deprioritises this key
+//   pool.markSuccess(key);          // resets its failure counter
+//
+export class KeyPool {
+  constructor(keys = []) {
+    this._keys = keys.filter(Boolean);
+    this._index = 0;
+    this._failures = {};
   }
-  throw lastError instanceof LLMError
-    ? lastError
-    : new LLMError('The model did not respond in time.', 'timeout', 504);
+
+  get size() {
+    return this._keys.length;
+  }
+
+  next() {
+    if (!this._keys.length) return null;
+    const total = this._keys.length;
+    for (let i = 0; i < total; i++) {
+      const key = this._keys[this._index % total];
+      this._index = (this._index + 1) % total;
+      if ((this._failures[key] || 0) < 3) return key;
+    }
+    // All keys have recent failures — reset counters and return first key anyway.
+    this._failures = {};
+    return this._keys[0];
+  }
+
+  markFailed(key) {
+    this._failures[key] = (this._failures[key] || 0) + 1;
+  }
+
+  markSuccess(key) {
+    this._failures[key] = 0;
+  }
 }
 
-/**
- * Google Gemini via the v1beta generateContent endpoint.
- * System prompt is passed as `system_instruction`, user text as a single
- * `user` turn. Cache param is accepted but silently ignored (Gemini handles
- * caching automatically for long prompts).
- */
-export async function geminiComplete({ key, model, system, user, maxTokens }) {
-  const started = Date.now();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const body = {
-    system_instruction: { parts: [{ text: system }] },
-    contents: [{ role: 'user', parts: [{ text: user }] }],
-    generationConfig: {
-      maxOutputTokens: maxTokens || 4000,
-      temperature: 1,
-    },
-  };
-  const payload = await postWithRetry(url, {
+// ─── Retry / timeout constants ────────────────────────────────────────────────
+//
+// 3 attempts, 150 s abort each.
+// Total worst-case: 150 s + 3 s + 150 s + 6 s + 150 s = ~459 s.
+// Vercel Pro supports up to 800 s. On the Hobby plan (300 s limit) set
+// MAX_ATTEMPTS=2 and ATTEMPT_TIMEOUT_MS=90_000.
+const MAX_ATTEMPTS = 3;
+const ATTEMPT_TIMEOUT_MS = 150_000;
+const BACKOFF_MS = [3000, 6000]; // wait between attempt 1→2 and 2→3
+
+// ─── Low-level HTTP helper ────────────────────────────────────────────────────
+
+async function postOnce(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    return response;
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+// ─── Provider-specific HTTP callers ──────────────────────────────────────────
+//
+// Each returns { text, inputTokens, outputTokens } or throws LLMError.
+// They are intentionally thin — no retry logic here; that lives in pooledComplete.
+
+/** Google AI Studio — generateContent endpoint */
+async function callGoogle({ key, model, system, user, maxTokens }) {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  const response = await postOnce(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+      generationConfig: { maxOutputTokens: maxTokens || 4000, temperature: 1 },
+    }),
   });
-
+  if (response.status === 429 || response.status >= 500) {
+    throw new LLMError(`Google upstream unavailable (${response.status})`, 'upstream_unavailable', 503);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new LLMError(`Google request rejected (${response.status}): ${detail}`, 'request_rejected', 400);
+  }
+  const payload = await response.json();
   const candidate = (payload.candidates || [])[0];
   const text = (candidate?.content?.parts || [])
     .map((p) => (typeof p.text === 'string' ? p.text : ''))
     .join('')
     .trim();
-
   const usage = payload.usageMetadata || {};
   return {
     text,
-    model,
     inputTokens: usage.promptTokenCount || 0,
     outputTokens: usage.candidatesTokenCount || 0,
-    latencyMs: Date.now() - started,
   };
 }
 
-// Keep the old name as an alias so run-stage.js requires no changes.
+/** OpenRouter — OpenAI-compatible chat completions endpoint.
+ *  Can route to virtually any model (Gemini, Claude, GPT, Llama, etc.) */
+async function callOpenRouter({ key, model, system, user, maxTokens }) {
+  const response = await postOnce('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'authorization': `Bearer ${key}`,
+      'http-referer': 'https://toned.ai',
+      'x-title': 'Toned AI Humanizer',
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      max_tokens: maxTokens || 4000,
+      temperature: 1,
+    }),
+  });
+  if (response.status === 429 || response.status >= 500) {
+    throw new LLMError(`OpenRouter upstream unavailable (${response.status})`, 'upstream_unavailable', 503);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new LLMError(`OpenRouter request rejected (${response.status}): ${detail}`, 'request_rejected', 400);
+  }
+  const payload = await response.json();
+  const text = (payload.choices?.[0]?.message?.content || '').trim();
+  const usage = payload.usage || {};
+  return {
+    text,
+    inputTokens: usage.prompt_tokens || 0,
+    outputTokens: usage.completion_tokens || 0,
+  };
+}
+
+/** SambaNova — OpenAI-compatible endpoint, optimised for high-throughput fast inference */
+async function callSambaNova({ key, model, system, user, maxTokens }) {
+  const response = await postOnce('https://api.sambanova.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'authorization': `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      max_tokens: maxTokens || 4000,
+      temperature: 1,
+    }),
+  });
+  if (response.status === 429 || response.status >= 500) {
+    throw new LLMError(`SambaNova upstream unavailable (${response.status})`, 'upstream_unavailable', 503);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new LLMError(`SambaNova request rejected (${response.status}): ${detail}`, 'request_rejected', 400);
+  }
+  const payload = await response.json();
+  const text = (payload.choices?.[0]?.message?.content || '').trim();
+  const usage = payload.usage || {};
+  return {
+    text,
+    inputTokens: usage.prompt_tokens || 0,
+    outputTokens: usage.completion_tokens || 0,
+  };
+}
+
+/** Cloudflare Workers AI — REST endpoint.
+ *  model must be the full CF model path e.g. "@cf/meta/llama-3.1-8b-instruct" */
+async function callCloudflare({ key, model, system, user, maxTokens, accountId }) {
+  if (!accountId) {
+    throw new LLMError('CLOUDFLARE_ACCOUNT_ID is not configured.', 'no_account_id', 500);
+  }
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${model}`;
+  const response = await postOnce(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'authorization': `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      max_tokens: maxTokens || 4000,
+    }),
+  });
+  if (response.status === 429 || response.status >= 500) {
+    throw new LLMError(`Cloudflare upstream unavailable (${response.status})`, 'upstream_unavailable', 503);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new LLMError(`Cloudflare request rejected (${response.status}): ${detail}`, 'request_rejected', 400);
+  }
+  const payload = await response.json();
+  const text = (payload.result?.response || '').trim();
+  // Cloudflare doesn't return token counts on all models
+  return { text, inputTokens: 0, outputTokens: 0 };
+}
+
+// ─── Pool-aware multi-provider caller ────────────────────────────────────────
+//
+// Tries providers in priority order, rotating keys within each pool on failure.
+// A 429 or timeout marks the current key as failed and rotates to the next key
+// (or next provider) before the next attempt — no manual intervention needed.
+//
+// Arguments:
+//   pools      – { google: KeyPool, openrouter: KeyPool, sambanova: KeyPool, cloudflare: KeyPool }
+//   models     – { google: { fast, quality }, openrouter: { fast, quality }, … }
+//   accountIds – { cloudflare: '<CF account id>' }
+//   tier       – 'fast' | 'quality'
+//
+// Provider priority:
+//   fast    → SambaNova (speed) → Google → OpenRouter → Cloudflare
+//   quality → Google → OpenRouter → SambaNova → Cloudflare
+//
+export async function pooledComplete({
+  pools,
+  models,
+  accountIds = {},
+  tier = 'fast',
+  system,
+  user,
+  maxTokens,
+}) {
+  const ORDER =
+    tier === 'fast'
+      ? ['sambanova', 'google', 'openrouter', 'cloudflare']
+      : ['google', 'openrouter', 'sambanova', 'cloudflare'];
+
+  const available = ORDER.filter((p) => pools[p] && pools[p].size > 0);
+
+  if (!available.length) {
+    throw new LLMError('No API keys configured for any provider.', 'no_keys', 500);
+  }
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // Spread attempts across providers so a single slow provider doesn't block all retries
+    const provider = available[attempt % available.length];
+    const pool = pools[provider];
+    const model = models[provider]?.[tier];
+
+    if (!model) {
+      lastError = new LLMError(`No model configured for ${provider}/${tier}`, 'no_model', 500);
+      continue;
+    }
+
+    const key = pool.next();
+    if (!key) continue;
+
+    try {
+      const started = Date.now();
+      let result;
+
+      if (provider === 'google') {
+        result = await callGoogle({ key, model, system, user, maxTokens });
+      } else if (provider === 'openrouter') {
+        result = await callOpenRouter({ key, model, system, user, maxTokens });
+      } else if (provider === 'sambanova') {
+        result = await callSambaNova({ key, model, system, user, maxTokens });
+      } else if (provider === 'cloudflare') {
+        result = await callCloudflare({
+          key,
+          model,
+          system,
+          user,
+          maxTokens,
+          accountId: accountIds.cloudflare,
+        });
+      }
+
+      pool.markSuccess(key);
+      return { ...result, model: `${provider}/${model}`, latencyMs: Date.now() - started };
+    } catch (err) {
+      pool.markFailed(key);
+      // Hard rejection (bad prompt / invalid key) — record and move on, no wait
+      if (err instanceof LLMError && err.code === 'request_rejected') {
+        lastError = err;
+        continue;
+      }
+      // Rate limit / timeout — wait before the next attempt
+      lastError = err;
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) =>
+          setTimeout(r, BACKOFF_MS[attempt] ?? BACKOFF_MS.at(-1)),
+        );
+      }
+    }
+  }
+
+  throw lastError instanceof LLMError
+    ? lastError
+    : new LLMError('All providers failed to respond in time.', 'timeout', 504);
+}
+
+// ─── Legacy single-key callers (backward compat) ──────────────────────────────
+//
+// run-stage.js now wires everything through pooledComplete.
+// These stubs remain so any other route that imports geminiComplete won't break.
+
+export async function geminiComplete({ key, model, system, user, maxTokens }) {
+  const started = Date.now();
+  const result = await callGoogle({ key, model, system, user, maxTokens });
+  return { ...result, model, latencyMs: Date.now() - started };
+}
+
 export const anthropicComplete = geminiComplete;
 
 // ─── JSON stage runner ────────────────────────────────────────────────────────
 
 function extractJson(text) {
-  // Strip markdown code fences if present
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1].trim() : text.trim();
   return JSON.parse(raw);
 }
 
-export async function runJsonStage({ key, model, system, user, maxTokens, cache }) {
-  const result = await anthropicComplete({ key, model, system, user, maxTokens, cache });
+// Pool-aware JSON runner used by run-stage.js
+export async function runJsonStagePooled({ pools, models, accountIds, tier, system, user, maxTokens }) {
+  const result = await pooledComplete({ pools, models, accountIds, tier, system, user, maxTokens });
   let data;
   try {
     data = extractJson(result.text);
@@ -127,7 +361,31 @@ export async function runJsonStage({ key, model, system, user, maxTokens, cache 
       502,
     );
   }
-  return { data, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens }, model: result.model };
+  return {
+    data,
+    usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+    model: result.model,
+  };
+}
+
+// Legacy single-key JSON runner (kept for backward compat)
+export async function runJsonStage({ key, model, system, user, maxTokens }) {
+  const result = await geminiComplete({ key, model, system, user, maxTokens });
+  let data;
+  try {
+    data = extractJson(result.text);
+  } catch {
+    throw new LLMError(
+      `Model returned invalid JSON: ${result.text.slice(0, 200)}`,
+      'invalid_json',
+      502,
+    );
+  }
+  return {
+    data,
+    usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+    model: result.model,
+  };
 }
 
 // ─── Text utilities ───────────────────────────────────────────────────────────
@@ -176,7 +434,7 @@ export function splitChunks(text, chunkWords = 800) {
 // ─── Cost estimation ──────────────────────────────────────────────────────────
 
 const PRICING = {
-  fast: { input: 1, output: 5 },      // per 1M tokens, USD
+  fast: { input: 1, output: 5 },    // per 1M tokens, USD
   quality: { input: 2, output: 10 },
 };
 
@@ -264,7 +522,6 @@ export function deterministicChecks(extraction, rewritten) {
   }
 
   for (const quote of extraction.quotations || []) {
-    // Check first 40 chars of quote
     const snippet = String(quote.text || '').slice(0, 40).toLowerCase();
     if (!snippet) continue;
     if (text.includes(snippet)) {

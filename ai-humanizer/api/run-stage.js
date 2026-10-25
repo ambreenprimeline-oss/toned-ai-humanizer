@@ -9,12 +9,13 @@
  */
 
 import {
-  anthropicComplete,
   auditProblems,
   deterministicChecks,
   estimateCost,
   intentCheck,
-  runJsonStage,
+  KeyPool,
+  pooledComplete,
+  runJsonStagePooled,
   splitChunks,
   summarizeAudit,
   wordCount,
@@ -76,33 +77,88 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.GOOGLE_API_KEY;
-  if (!apiKey) {
+  // ── API key pools ──────────────────────────────────────────────────────────
+  // Each provider accepts up to 3 keys (KEY_1 / KEY_2 / KEY_3).
+  // Keys that are missing or empty are silently skipped.
+  // At least one provider must have a key or the handler returns 500.
+
+  const pools = {
+    google: new KeyPool([
+      process.env.GOOGLE_API_KEY_1 || process.env.GOOGLE_API_KEY,
+      process.env.GOOGLE_API_KEY_2,
+      process.env.GOOGLE_API_KEY_3,
+    ]),
+    openrouter: new KeyPool([
+      process.env.OPENROUTER_API_KEY_1,
+      process.env.OPENROUTER_API_KEY_2,
+      process.env.OPENROUTER_API_KEY_3,
+    ]),
+    sambanova: new KeyPool([
+      process.env.SAMBANOVA_API_KEY_1,
+      process.env.SAMBANOVA_API_KEY_2,
+      process.env.SAMBANOVA_API_KEY_3,
+    ]),
+    cloudflare: new KeyPool([
+      process.env.CLOUDFLARE_API_KEY_1,
+      process.env.CLOUDFLARE_API_KEY_2,
+      process.env.CLOUDFLARE_API_KEY_3,
+    ]),
+  };
+
+  const totalKeys = Object.values(pools).reduce((sum, p) => sum + p.size, 0);
+  if (totalKeys === 0) {
     return res.status(500).json({
-      error: 'GOOGLE_API_KEY is not configured. Add it to your Vercel environment variables.',
+      error:
+        'No API keys configured. Add at least GOOGLE_API_KEY_1 (or GOOGLE_API_KEY) to your environment variables.',
     });
   }
 
-  const modelFast = process.env.MODEL_FAST || 'gemini-3.8-flash';
-  const modelQuality = process.env.MODEL_QUALITY || 'gemini-2.5-pro';
-  const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
-  const maxJobTokens = Number(process.env.MAX_JOB_TOKENS) || 120000;
-  const chunkWords = 500; // smaller chunks → shorter prompts → faster per-call, less likely to time out
-  const maxRepairLoops = 2;
-  const promptVersion = 'humanizer/1.0.0';
+  // ── Model IDs per provider / tier ─────────────────────────────────────────
+  // Override any of these via environment variables if needed.
+  const models = {
+    google: {
+      fast:    process.env.GOOGLE_MODEL_FAST    || 'gemini-2.0-flash',
+      quality: process.env.GOOGLE_MODEL_QUALITY || 'gemini-2.5-pro',
+    },
+    openrouter: {
+      fast:    process.env.OPENROUTER_MODEL_FAST    || 'google/gemini-2.0-flash-001',
+      quality: process.env.OPENROUTER_MODEL_QUALITY || 'google/gemini-2.5-pro-preview-06-05',
+    },
+    sambanova: {
+      fast:    process.env.SAMBANOVA_MODEL_FAST    || 'Meta-Llama-3.3-70B-Instruct',
+      quality: process.env.SAMBANOVA_MODEL_QUALITY || 'Meta-Llama-3.3-70B-Instruct',
+    },
+    cloudflare: {
+      fast:    process.env.CLOUDFLARE_MODEL_FAST    || '@cf/meta/llama-3.1-8b-instruct',
+      quality: process.env.CLOUDFLARE_MODEL_QUALITY || '@cf/meta/llama-3.1-70b-instruct',
+    },
+  };
 
+  const accountIds = {
+    cloudflare: process.env.CLOUDFLARE_ACCOUNT_ID,
+  };
+
+  const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
+  const maxJobTokens  = Number(process.env.MAX_JOB_TOKENS)  || 120000;
+  const chunkWords    = 500;
+  const maxRepairLoops = 2;
+  const promptVersion  = 'humanizer/1.0.0';
+
+  // ── Convenience wrappers ──────────────────────────────────────────────────
+  // llm.fast / llm.quality mirror the old API so all stage code below is
+  // unchanged — they just route through the pool instead of a single key.
   const llm = {
     fast: (opts) => {
       if (opts.json) {
-        return runJsonStage({ key: apiKey, model: modelFast, ...opts });
+        return runJsonStagePooled({ pools, models, accountIds, tier: 'fast', ...opts });
       }
-      return anthropicComplete({ key: apiKey, model: modelFast, ...opts });
+      return pooledComplete({ pools, models, accountIds, tier: 'fast', ...opts });
     },
     quality: (opts) => {
       if (opts.json) {
-        return runJsonStage({ key: apiKey, model: modelQuality, ...opts });
+        return runJsonStagePooled({ pools, models, accountIds, tier: 'quality', ...opts });
       }
-      return anthropicComplete({ key: apiKey, model: modelQuality, ...opts });
+      return pooledComplete({ pools, models, accountIds, tier: 'quality', ...opts });
     },
   };
 
@@ -170,8 +226,6 @@ export default async function handler(req, res) {
         stage,
         progress: 15,
         prompt_version: promptVersion,
-        model_fast: modelFast,
-        model_quality: modelQuality,
         error: '',
       };
       return res.json({ stage, chunk_count: chunks.length, progress: 15, patch });
@@ -246,9 +300,7 @@ export default async function handler(req, res) {
         .filter(Boolean)
         .join('\n\n');
 
-      const result = await anthropicComplete({
-        key: apiKey,
-        model: modelQuality,
+      const result = await llm.quality({
         system: `${REWRITE_SYSTEM}\n\nAI-PATTERN CATALOG (reference):\n${AI_PATTERN_CATALOG}`,
         user: userPrompt,
         maxTokens: 8000,
@@ -270,8 +322,7 @@ export default async function handler(req, res) {
         rewritten_text: stored.map((c) => c.text).filter(Boolean).join('\n\n'),
         stage,
         progress,
-      };
-      return res.json({ stage, chunk_index: chunkIndex, done, chunk_count: stored.length, progress, patch });
+      };      return res.json({ stage, chunk_index: chunkIndex, done, chunk_count: stored.length, progress, patch });
     }
 
     // ── ASSEMBLE ───────────────────────────────────────────────────────────────
