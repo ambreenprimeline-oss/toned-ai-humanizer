@@ -117,12 +117,12 @@ export default async function handler(req, res) {
   // Override any of these via environment variables if needed.
   const models = {
     google: {
-      fast:    process.env.GOOGLE_MODEL_FAST    || 'gemini-2.0-flash',
+      fast:    process.env.GOOGLE_MODEL_FAST    || 'gemini-3.8-flash',
       quality: process.env.GOOGLE_MODEL_QUALITY || 'gemini-2.5-pro',
     },
     openrouter: {
-      fast:    process.env.OPENROUTER_MODEL_FAST    || 'google/gemini-2.0-flash-001',
-      quality: process.env.OPENROUTER_MODEL_QUALITY || 'google/gemini-2.5-pro-preview-06-05',
+      fast:    process.env.OPENROUTER_MODEL_FAST    || 'google/gemini-flash-1.5',
+      quality: process.env.OPENROUTER_MODEL_QUALITY || 'google/gemini-2.5-pro-preview',
     },
     sambanova: {
       fast:    process.env.SAMBANOVA_MODEL_FAST    || 'Meta-Llama-3.3-70B-Instruct',
