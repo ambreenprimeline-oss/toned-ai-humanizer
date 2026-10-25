@@ -14,15 +14,19 @@ export class LLMError extends Error {
   }
 }
 
-// 2 attempts: fast abort at 90s each, 3s backoff between.
-// Total worst-case: 90s + 3s + 90s = 183s, well inside Vercel's 300s limit.
-const BACKOFF_MS = [3000, 5000];
+// 3 attempts: abort at 150s each, with exponential backoff between.
+// Total worst-case: 150s + 5s + 150s + 10s + 150s = 465s.
+// Vercel Pro functions support up to 800s; Hobby plan is capped at 300s.
+// If you are on the Hobby plan, keep ATTEMPT_TIMEOUT_MS at 90_000 and MAX_ATTEMPTS at 2.
+const MAX_ATTEMPTS = 3;
+const ATTEMPT_TIMEOUT_MS = 150_000; // 150s — enough for gemini-2.5-pro on large chunks
+const BACKOFF_MS = [5000, 10000];   // wait between attempt 1→2 and 2→3
 
 async function postWithRetry(url, options) {
   let lastError = null;
-  for (let attempt = 0; attempt < BACKOFF_MS.length; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90000);
+    const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
     try {
       const response = await fetch(url, { ...options, signal: controller.signal });
       clearTimeout(timer);
@@ -32,7 +36,9 @@ async function postWithRetry(url, options) {
           'upstream_unavailable',
           503,
         );
-        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? BACKOFF_MS.at(-1)));
+        }
         continue;
       }
       if (!response.ok) {
@@ -48,8 +54,8 @@ async function postWithRetry(url, options) {
       clearTimeout(timer);
       if (error instanceof LLMError && error.code === 'request_rejected') throw error;
       lastError = error;
-      if (attempt < BACKOFF_MS.length - 1) {
-        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt] ?? BACKOFF_MS.at(-1)));
       }
     }
   }

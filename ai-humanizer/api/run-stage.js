@@ -87,7 +87,7 @@ export default async function handler(req, res) {
   const modelQuality = process.env.MODEL_QUALITY || 'gemini-2.5-pro';
   const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
   const maxJobTokens = Number(process.env.MAX_JOB_TOKENS) || 120000;
-  const chunkWords = 800;
+  const chunkWords = 500; // smaller chunks → shorter prompts → faster per-call, less likely to time out
   const maxRepairLoops = 2;
   const promptVersion = 'humanizer/1.0.0';
 
