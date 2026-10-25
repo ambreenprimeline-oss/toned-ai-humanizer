@@ -138,9 +138,9 @@ export default async function handler(req, res) {
     cloudflare: process.env.CLOUDFLARE_ACCOUNT_ID,
   };
 
-  const maxInputChars = Number(process.env.MAX_INPUT_CHARS) || 20000;
-  const maxJobTokens  = Number(process.env.MAX_JOB_TOKENS)  || 120000;
-  const chunkWords    = 500;
+  const maxInputChars  = Number(process.env.MAX_INPUT_CHARS) || 120000; // raised to support 20k words (~120k chars)
+  const maxJobTokens   = Number(process.env.MAX_JOB_TOKENS)  || 400000; // raised for parallel multi-chunk jobs
+  const CHUNK_WORDS    = 4000; // each parallel worker gets ~4k words
   const maxRepairLoops = 2;
   const promptVersion  = 'humanizer/1.0.0';
 
@@ -208,7 +208,7 @@ export default async function handler(req, res) {
         return res.json({ stage, refused: true, reason: refusal.reason, patch: { status: 'refused', stage, progress: 0, error: refusal.reason } });
       }
 
-      const chunks = splitChunks(source, chunkWords);
+      const chunks = splitChunks(source, CHUNK_WORDS);
       const result = await llm.fast({
         json: true,
         system: PROMPTS.extract.system,
@@ -254,7 +254,116 @@ export default async function handler(req, res) {
       return res.json({ stage, progress: 25, patch });
     }
 
-    // ── REWRITE ────────────────────────────────────────────────────────────────
+    // ── REWRITE_ALL (parallel) ─────────────────────────────────────────────────
+    // Fires ALL chunks simultaneously via Promise.all — each chunk gets a
+    // different provider/key from the pool so they run in true parallel.
+    //
+    // Scaling example:
+    //   1k words  → 1 chunk  → 1 call
+    //   4k words  → 1 chunk  → 1 call
+    //   8k words  → 2 chunks → 2 parallel calls
+    //   20k words → 5 chunks → 5 parallel calls  (≈ same wall-clock as 1 call)
+    //
+    // The client should use this stage instead of looping over 'rewrite'.
+    if (stage === 'rewrite_all') {
+      const stored = (job.chunks || []).map((c) => ({ ...c }));
+      if (!stored.length) {
+        return res.json({ stage, error: 'Run the extract stage first.', patch: {} });
+      }
+
+      // Idempotent — skip chunks already done
+      const pending = stored.filter((c) => !c.text);
+      if (!pending.length) {
+        return res.json({ stage, cached: true, chunk_count: stored.length, progress: 70, patch: {} });
+      }
+
+      const sourceChunks = splitChunks(String(job.source_text || ''), CHUNK_WORDS);
+      const style = STYLE_MODULES[job.style] || STYLE_MODULES.professional_researcher;
+      const customStyle =
+        job.style === 'custom' && job.custom_style
+          ? `\nAuthor's own style instruction: ${job.custom_style}`
+          : '';
+      const systemPrompt = `${REWRITE_SYSTEM}\n\nAI-PATTERN CATALOG (reference):\n${AI_PATTERN_CATALOG}`;
+
+      // Build one async call per pending chunk — all kicked off simultaneously
+      const chunkCalls = pending.map((chunk) => {
+        const srcChunk = sourceChunks[chunk.index];
+        if (!srcChunk) {
+          return Promise.resolve({ index: chunk.index, text: '', error: 'Source chunk missing' });
+        }
+
+        const prevText = stored
+          .slice(Math.max(0, chunk.index - 2), chunk.index)
+          .filter((c) => c.text)
+          .map((c) => lastWords(c.text, 80));
+
+        const userPrompt = [
+          `STYLE MODULE (${job.style}):\n${style}${customStyle}`,
+          constraintsLine(job),
+          `REWRITE PLAN (diagnostic stage):\n${JSON.stringify(job.rewrite_plan || {})}`,
+          `MUST SURVIVE UNCHANGED (extracted from the source):\n${extractionDigest(job.extraction)}`,
+          prevText.length
+            ? `PRECEDING SECTIONS (do not repeat, only continue smoothly):\n${prevText.join('\n---\n')}`
+            : '',
+          `SECTION ${chunk.index + 1} OF ${stored.length}: rewrite the text below, paragraph by paragraph.`,
+          wrapUserText(srcChunk.text),
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        return llm
+          .quality({ system: systemPrompt, user: userPrompt, maxTokens: 8000 })
+          .then((r) => ({
+            index: chunk.index,
+            text: String(r.text || '').trim(),
+            inputTokens: r.inputTokens || 0,
+            outputTokens: r.outputTokens || 0,
+          }))
+          .catch((err) => ({ index: chunk.index, text: '', error: err.message }));
+      });
+
+      // All chunks run in parallel — wall-clock = slowest single chunk
+      const results = await Promise.all(chunkCalls);
+
+      let totalInput = 0;
+      let totalOutput = 0;
+      const errors = [];
+
+      for (const r of results) {
+        if (r.error || !r.text) {
+          errors.push(`Chunk ${r.index + 1}: ${r.error || 'empty response'}`);
+          continue;
+        }
+        stored[r.index] = { ...stored[r.index], text: r.text };
+        totalInput  += r.inputTokens;
+        totalOutput += r.outputTokens;
+      }
+
+      const done = stored.filter((c) => c.text).length;
+
+      if (errors.length && done === 0) {
+        return res.json({
+          stage,
+          error: `All chunks failed: ${errors.join('; ')}`,
+          patch: { status: 'failed', error: errors.join('; ') },
+        });
+      }
+
+      const patch = {
+        ...mergeUsage(job, { inputTokens: totalInput, outputTokens: totalOutput }, 'quality'),
+        chunks: stored,
+        rewritten_text: stored.map((c) => c.text).filter(Boolean).join('\n\n'),
+        stage,
+        progress: 70,
+        ...(errors.length
+          ? { notes: appendNote(job.notes, `Partial rewrite — failed chunks: ${errors.join('; ')}`) }
+          : {}),
+      };
+
+      return res.json({ stage, done, chunk_count: stored.length, failed_chunks: errors.length, progress: 70, patch });
+    }
+
+    // ── REWRITE (single chunk, kept for backward compat) ───────────────────────
     if (stage === 'rewrite') {
       const stored = (job.chunks || []).map((c) => ({ ...c }));
       if (!stored.length) {
@@ -269,7 +378,7 @@ export default async function handler(req, res) {
         return res.json({ stage, chunk_index: chunkIndex, cached: true, done, chunk_count: stored.length, progress: job.progress || 40, patch: {} });
       }
 
-      const sourceChunks = splitChunks(String(job.source_text || ''), chunkWords);
+      const sourceChunks = splitChunks(String(job.source_text || ''), CHUNK_WORDS);
       const sourceChunk = sourceChunks[chunkIndex];
       if (!sourceChunk) {
         return res.json({ stage, error: 'That section does not exist.', patch: {} });
