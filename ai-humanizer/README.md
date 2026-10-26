@@ -1,4 +1,6 @@
-# Toned AI Humanizer
+# Toned AI Humanizer · Developer guide
+
+[← Product overview](../README.md)
 
 A writing editor that changes voice while checking the rewrite against the original. Paste text or open a `.txt`/Markdown document, choose a voice, then review paragraph changes, factual flags, and editor notes. Outputs can be copied or downloaded. Automated auditing reduces risk; it does not establish that the source is true or guarantee that a rewrite is accurate.
 
