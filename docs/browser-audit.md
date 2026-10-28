@@ -28,7 +28,7 @@ The real-provider sample was a short two-paragraph document containing `42`, `20
 
 ## Deployment checks still required
 
-The cloud instance did not have production Redis credentials, and its environment settings are separate from Vercel. Before opening public traffic, verify Vercel's OpenRouter binding, free mode, dedicated Upstash URL/token, and shared rate limits; then redeploy the pushed commit and run a real rewrite on the public URL. Production generation intentionally fails closed without usable durable limiting.
+The cloud instance did not have production store credentials, and its environment settings are separate from Vercel. Before opening public traffic, verify Vercel's OpenRouter binding, free mode, selected Neon/Upstash configuration, and shared rate limits; then redeploy the pushed commit and run a real rewrite on the public URL. Production generation intentionally fails closed without usable durable limiting.
 
 The cloud network draft includes the public app and font domains. Saving a draft does not apply it to the running environment or publish it. See the [deployment guide](../ai-humanizer/README.md#production-deployment).
 
@@ -48,4 +48,14 @@ The editor previously described this permanent setup issue as temporarily unavai
 
 After this fix, `npm run check` passed lint, all 128 unit tests, and the production build. The full Chromium suite passed all 29 tests with no skips.
 
-The deployment still needs valid `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Vercel's Production environment, followed by redeployment. This session has no Vercel settings access. See [the recovery steps](../ai-humanizer/README.md#rewriting-is-unavailable-after-deployment).
+The deployment still needs a shared limiter configured in Vercel's Production environment, followed by redeployment. It can now use Neon or Upstash. This session has no Vercel settings access. See [the recovery steps](../ai-humanizer/README.md#rewriting-is-unavailable-after-deployment).
+
+## Neon alternative · 28 October 2026
+
+Neon Postgres is supported alongside Upstash. Set `RATE_LIMIT_STORE=neon`, supply a server-only `DATABASE_URL` (or `NEON_DATABASE_URL`), and run [the SQL migration](../ai-humanizer/db/neon-rate-limits.sql) once in the same database/branch and role. Neon stores hashed request counters only; document history stays in the browser. Both limits are checked and consumed within one PostgreSQL function call. Rejected requests do not consume allowance or create new empty client counters.
+
+Automated tests exercise the actual Neon SDK with mocked HTTPS responses, plus the migration and limiter function on PGlite's embedded PostgreSQL engine. An integration test forwards the real guard/SDK's parameterized query into that engine and parses its response through the SDK. They cover repeatable migration, limits, expiration cleanup, invalid inputs, failed-update rollback, error privacy, and queued capacity requests. PGlite serializes its submissions; this is not a multi-connection Neon load test.
+
+Validation after the Neon addition: lint, all 146 unit/integration tests, production build, and all 29 Chromium tests passed with no skips. The dependency audit reported zero vulnerabilities, and the browser build excludes the Neon server transport.
+
+No live Neon connection string was supplied in this environment, so hosted Neon connectivity and the production schema remain unverified. Run the migration and configure Vercel using the [Neon setup guide](../ai-humanizer/README.md#neon-postgres-setup), redeploy, then test a public rewrite.
