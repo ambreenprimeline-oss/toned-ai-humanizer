@@ -87,10 +87,10 @@ Neon can provide the shared request-limit store without an Upstash account. Its 
 | Variable | Value |
 | --- | --- |
 | `RATE_LIMIT_STORE` | `neon` |
-| `DATABASE_URL` | The full PostgreSQL connection string copied from Neon |
+| `NEON_DATABASE_URL` | The full PostgreSQL connection string copied from Neon |
 | `AI_PROVIDER_MODE` | `free` to keep free-only model routing |
 
-`NEON_DATABASE_URL` is an alternative to `DATABASE_URL`; use one connection variable consistently. A Neon API key, dashboard URL, or database name alone is not a connection string. The Neon connection is used for counters only, so it does not create accounts or synchronize document history.
+`NEON_DATABASE_URL` is the preferred app variable and takes precedence when both names are set. `DATABASE_URL` remains a supported fallback for Neon CLI compatibility; use one current connection binding consistently. A Neon API key, dashboard URL, or database name alone is not a connection string. The Neon connection is used for counters only, so it does not create accounts or synchronize document history.
 
 Add Preview scope too if preview deployments should rewrite. Save the variables, then choose **Deployments → latest production deployment → Redeploy**. Setting `RATE_LIMIT_STORE=neon` explicitly selects Neon even if old Upstash variables remain. Upstash credentials are not required for this option.
 
@@ -138,7 +138,7 @@ With `protectionStore: "neon"`, a false protection status means the running depl
 
 | Issue | Adjustment |
 | --- | --- |
-| `neon_url_missing` | Set `DATABASE_URL` in Production, then redeploy. Saved project variables are separate from those captured by an existing deployment. |
+| `neon_url_missing` | Set `NEON_DATABASE_URL` in Production, then redeploy. Saved project variables are separate from those captured by an existing deployment. |
 | `neon_url_invalid` | Copy the complete PostgreSQL URI from Neon Connect. Verify its username, password, database path, and Neon hostname locally; keep the value private. |
 | `neon_url_requires_tls` | Use exactly one `sslmode=require` or `sslmode=verify-full` query parameter. |
 | `neon_url_unsupported_parameters` | Use the standard Neon URI with `sslmode` and optional `channel_binding=require`/`prefer`. Remove other connection query options. |
@@ -149,7 +149,7 @@ If health is configured but a rewrite fails, the API distinguishes these databas
 
 | Stage error code | Adjustment |
 | --- | --- |
-| `rate_limit_schema_missing` | Run the complete `db/neon-rate-limits.sql` migration in the database/branch used by `DATABASE_URL`. |
+| `rate_limit_schema_missing` | Run the complete `db/neon-rate-limits.sql` migration in the database/branch used by `NEON_DATABASE_URL` (or its CLI-compatible fallback). |
 | `rate_limit_database_auth_failed` | Refresh the connection string from Neon Connect for the intended database role, then redeploy. |
 | `rate_limit_database_permission_denied` | Run the migration with the same role as the app connection, or grant that role the scoped table/function permissions listed in the SQL file. |
 
