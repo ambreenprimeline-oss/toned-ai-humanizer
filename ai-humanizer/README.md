@@ -98,6 +98,22 @@ After deploying, confirm `/api/health` reports `configured: true` and `protectio
 
 The server uses Neon's HTTPS driver, with a 15-second request deadline to allow a suspended Free compute to wake. In a cloud environment with restricted networking, allow the SDK's regional `api.<region>.<cloud>.neon.tech` destination for your database; allowing only the PostgreSQL endpoint hostname may be insufficient. Preserve TLS verification.
 
+#### Neon CLI workflow
+
+The included `neon.ts` declares a Postgres-only policy and leaves branch lifetime and compute settings unchanged. Link this app directory to your own project with `neon init`, then run `neon deploy`. If a global CLI install is unavailable, use `npx neon@latest` for those commands. The CLI writes its project link to ignored `.neon` and pulls the pooled `DATABASE_URL` and direct `DATABASE_URL_UNPOOLED` into an ignored local environment file. Keep `RATE_LIMIT_STORE=neon` and `AI_PROVIDER_MODE=free` in server settings.
+
+The CLI needs an authenticated Neon session or a securely injected `NEON_API_KEY`. A database connection string authorizes SQL, while deployment also needs project-management access. On a remote runner, a scoped API key can be easier than browser OAuth. Never put either credential in source control or chat. Restricted network environments must allow `api.neon.tech` for management, `oauth2.neon.tech` for browser sign-in, and the actual database HTTP endpoint for application requests. Some database endpoints include a routing label such as `c-6`; preserve that label in the SDK destination.
+
+Apply the tracked schema through a direct connection after deployment:
+
+```bash
+npx neon@latest psql production -- -v ON_ERROR_STOP=1 -f db/neon-rate-limits.sql
+npm run db:check
+npm run db:check -- --exercise-guard
+```
+
+The final command consumes one real request allowance. The check reads `.env.local` and `.env` while preserving injected environment values, verifies connectivity/schema/permissions, and prints sanitized status records. A nonzero exit means verification did not pass; missing configuration is never reported as a successful connection. Start `npm run dev` and exercise a real rewrite afterward. `neon deploy` provisions backend settings; Vercel remains the frontend/API host and requires its own server environment configuration and redeployment.
+
 ### Upstash Redis setup
 
 Open [Upstash Console](https://console.upstash.com/), create a dedicated Redis database, and choose the **Free** plan. Open its **REST API** section and copy the REST URL and standard REST token. Free-plan quotas apply; [check the current limits](https://upstash.com/pricing/redis).

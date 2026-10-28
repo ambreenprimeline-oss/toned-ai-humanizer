@@ -34,13 +34,13 @@ The cloud network draft includes the public app and font domains. Saving a draft
 
 ## Live deployment follow-up · 28 October 2026
 
-The public health endpoint returned HTTP503:
+The public health endpoint returned HTTP 503:
 
 ```json
 {"mode":"free","configured":false,"providerConfigured":true,"protectionConfigured":false,"providers":["openrouter"]}
 ```
 
-A synthetic extraction request to the public `/api/run-stage` also returned HTTP503 with `code: "rate_limit_unavailable"`. This confirms production request protection is missing or malformed in the deployment configuration. It does not indicate a missing model key or validate the configured OpenRouter credential.
+A synthetic extraction request to the public `/api/run-stage` also returned HTTP 503 with `code: "rate_limit_unavailable"`. This confirms production request protection is missing or malformed in the deployment configuration. It does not indicate a missing model key or validate the configured OpenRouter credential.
 
 Chromium reproduced the deployed banner with the rewrite button disabled and no page errors. The cloud proxy's certificate was not trusted by Chromium directly, so unchanged live resources were forwarded through Node's TLS-verified environment proxy; no application or API responses were mocked.
 
@@ -58,4 +58,16 @@ Automated tests exercise the actual Neon SDK with mocked HTTPS responses, plus t
 
 Validation after the Neon addition: lint, all 146 unit/integration tests, production build, and all 29 Chromium tests passed with no skips. The dependency audit reported zero vulnerabilities, and the browser build excludes the Neon server transport.
 
-No live Neon connection string was supplied in this environment, so hosted Neon connectivity and the production schema remain unverified. Run the migration and configure Vercel using the [Neon setup guide](../ai-humanizer/README.md#neon-postgres-setup), redeploy, then test a public rewrite.
+No live Neon connection string was injected into this environment during those checks, so hosted Neon connectivity and the production schema remain unverified. Run the migration and configure Vercel using the [Neon setup guide](../ai-humanizer/README.md#neon-postgres-setup), redeploy, then test a public rewrite.
+
+## Neon CLI setup attempt · 28 October 2026
+
+- Global `npm i -g neon@latest` failed because the runner's home install directory is unwritable. The requested `npx neon@latest` fallback installed and ran CLI 8.13.1.
+- The default initializer's global plugin install hit the same home-directory limitation. A supported project-scoped retry installed the `neon` and `neon-postgres` agent skills and generated `neon.ts` with its dependencies.
+- The directory is linked locally to the requested project/production branch, with `.neon` ignored. The CLI explicitly reported `Written offline (--no-checks): nothing was verified.` The Postgres-only policy leaves branch lifetime and compute settings unchanged.
+- `neon deploy` and `neon login` failed with `Could not reach the Neon API`. Direct requests to management and OAuth endpoints received proxy CONNECT 403, including after a network escalation attempt. Required host additions and a secure `NEON_API_KEY` binding were saved in the cloud environment draft; the binding was still unfilled at the last check.
+- The app already reads the CLI's pooled `DATABASE_URL`. A local ignored environment file sets only `RATE_LIMIT_STORE=neon` and `AI_PROVIDER_MODE=free`; no connection credential was invented or copied into source.
+
+Validation completed: `npm run build` passed, `npm run check` passed lint, 146 tests, and build, the full Chromium suite passed 29 tests, and the dependency audit reported zero vulnerabilities. The app started; its root returned HTTP 200. Health returned HTTP 503 with `protectionStore: "neon"`, `providerConfigured: true`, and `protectionConfigured: false`. A synthetic stage request returned HTTP 503 `rate_limit_unavailable` without calling a model.
+
+The new `npm run db:check` command correctly exited 1 with `neonUrlPresent: false`; it did not claim a working database. Deployment, environment download, schema application, real Neon access, and a real Neon-backed rewrite remain blocked pending network access and CLI authentication. No end-to-end Neon success is claimed. See [the CLI workflow](../ai-humanizer/README.md#neon-cli-workflow).
