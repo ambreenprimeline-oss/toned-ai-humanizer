@@ -1,6 +1,6 @@
 # Release verification · 28 October 2026
 
-This report records checks against the repository in the cloud development environment. Public-site navigation to `https://ai-humanizer-pearl.vercel.app/` was blocked by the environment proxy, so these results do not establish the state of the deployed application.
+This report records checks against the repository in the cloud development environment. The initial public-site inspection was blocked by the environment proxy. A later live check reached the deployment and confirmed a configuration blocker; see the follow-up below.
 
 ## Changes verified
 
@@ -30,4 +30,22 @@ The real-provider sample was a short two-paragraph document containing `42`, `20
 
 The cloud instance did not have production Redis credentials, and its environment settings are separate from Vercel. Before opening public traffic, verify Vercel's OpenRouter binding, free mode, dedicated Upstash URL/token, and shared rate limits; then redeploy the pushed commit and run a real rewrite on the public URL. Production generation intentionally fails closed without usable durable limiting.
 
-The cloud network draft includes the public app and font domains. Saving the draft does not apply it to the running environment or publish it. Live-site inspection can resume after those network settings are applied. See the [deployment guide](../ai-humanizer/README.md#production-deployment).
+The cloud network draft includes the public app and font domains. Saving a draft does not apply it to the running environment or publish it. See the [deployment guide](../ai-humanizer/README.md#production-deployment).
+
+## Live deployment follow-up · 28 October 2026
+
+The public health endpoint returned HTTP503:
+
+```json
+{"mode":"free","configured":false,"providerConfigured":true,"protectionConfigured":false,"providers":["openrouter"]}
+```
+
+A synthetic extraction request to the public `/api/run-stage` also returned HTTP503 with `code: "rate_limit_unavailable"`. This confirms production request protection is missing or malformed in the deployment configuration. It does not indicate a missing model key or validate the configured OpenRouter credential.
+
+Chromium reproduced the deployed banner with the rewrite button disabled and no page errors. The cloud proxy's certificate was not trusted by Chromium directly, so unchanged live resources were forwarded through Node's TLS-verified environment proxy; no application or API responses were mocked.
+
+The editor previously described this permanent setup issue as temporarily unavailable and suggested waiting. It now distinguishes incomplete site setup from temporary connectivity failures. Regression tests cover both missing configuration flags, disabled generation without a stage request, and recovery after configuration changes while preserving the draft.
+
+After this fix, `npm run check` passed lint, all 128 unit tests, and the production build. The full Chromium suite passed all 29 tests with no skips.
+
+The deployment still needs valid `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Vercel's Production environment, followed by redeployment. This session has no Vercel settings access. See [the recovery steps](../ai-humanizer/README.md#rewriting-is-unavailable-after-deployment).

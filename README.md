@@ -158,7 +158,7 @@ Import this repository into Vercel and set the **Root Directory** to **`ai-human
 Before opening the deployment to users:
 
 1. **Add `OPENROUTER_API_KEY_1`** in Vercel’s server environment settings and keep `AI_PROVIDER_MODE=free`, or explicitly choose configured mode and its provider credentials. Cloud development settings do not automatically configure a deployment.
-2. **Configure shared request limits** with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from a dedicated Upstash database. The token needs EVAL permissions. Production and preview deployments require this shared limiter.
+2. **Configure shared request limits** with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` from a dedicated Upstash database. Upstash offers a Free plan; [setup steps](ai-humanizer/README.md#rewriting-is-unavailable-after-deployment) explain where to copy both values and add them in Vercel. The token needs EVAL permissions. Production and preview deployments require this shared limiter.
 3. **Set a usage budget.** Defaults allow 60 stage requests per client per 10 minutes and 1,000 globally per UTC day. A document uses multiple stage requests. Review those limits and your provider’s billing controls for your expected traffic.
 4. **Run the checks**, then exercise a representative rewrite using your actual provider credentials and inspect its audit.
 5. **Verify the deployed experience**, including direct page routes, exports, missing-service messages, and rate-limit behavior.

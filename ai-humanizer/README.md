@@ -75,6 +75,25 @@ Before allowing public traffic:
 
 Production billable endpoints fail closed if durable rate limiting is unconfigured or unavailable. Local development uses an in-memory limiter. Redis stores hashed client identifiers and counters, not source documents. The API rejects cross-origin browser calls, oversized requests, and malformed stage state. Rate limits cap abuse but are not user authentication; the application currently has no accounts or paid subscriptions. Use deployment access protection for private releases.
 
+### Rewriting is unavailable after deployment
+
+Inspect the deployed `/api/health` response. When it reports `providerConfigured: true` and `protectionConfigured: false`, the model provider has configuration but production request limiting does not. Waiting or adding another model key will not resolve this setup issue.
+
+In **Vercel → Project → Settings → Environment Variables**, set these variables for **Production** using a dedicated Upstash Redis database (a free plan is available):
+
+For the free option, open [Upstash Console](https://console.upstash.com/), create a Redis database, and choose the **Free** plan. Open that database's **REST API** section and copy its REST URL and standard REST token. These are database credentials, not your app's public URL or an AI model key. Free-plan quotas apply; [check the current limits](https://upstash.com/pricing/redis).
+
+| Variable | Required value |
+| --- | --- |
+| `UPSTASH_REDIS_REST_URL` | The database's HTTPS REST URL, such as `https://<database>.upstash.io`. Use the REST URL, not a `redis://` connection string; do not add a path or query. |
+| `UPSTASH_REDIS_REST_TOKEN` | The database's REST token with EVAL/write permission; a read-only token cannot enforce counters. |
+
+Enter the values securely in Vercel. They are separate from Codex cloud environment bindings. Add Preview scope too if preview deployments should rewrite. **Redeploy after saving:** changing variables does not update an already-built deployment.
+
+In Vercel, open **Deployments**, select the latest production deployment, and choose **Redeploy** after adding both variables. Do not paste the token into the editor, source files, chat, or a variable prefixed with `VITE_`.
+
+After redeployment, health should return HTTP200 with `configured`, `providerConfigured`, and `protectionConfigured` all `true`. Then run a real rewrite: health checks presence/format only, so an invalid token, inaccessible Redis database, or unavailable model can still cause a stage error. Keep free-only routing enabled; its production request protection is still required.
+
 ## Data and privacy
 
 History and preferences are stored in this browser's `localStorage`; they do not synchronize between devices. Source and rewritten text travel through the API to the configured AI provider during processing. Provider data-retention terms apply. Browser extensions or anyone using the same browser profile may access locally saved history. Settings provide retention preferences and deletion controls; clearing site data also removes history. There is no background purge when the browser is closed.
