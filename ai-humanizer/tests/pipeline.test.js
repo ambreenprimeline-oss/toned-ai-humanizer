@@ -464,3 +464,25 @@ test('a regenerated audit must still cover every source item before finalization
   assert.equal(final.statusCode, 200, JSON.stringify(final.body));
   assert.equal(final.body.patch.status, 'completed');
 });
+
+test('OpenRouter diagnosis requests reserve its short output allowance for visible JSON with minimal reasoning', async (t) => {
+  configure(t, [extraction]);
+  const job = { source_text: source };
+  const extracted = await call({ stage: 'extract', job });
+  assert.equal(extracted.statusCode, 200);
+  Object.assign(job, extracted.body.patch);
+  process.env.AI_PROVIDER_MODE = 'free';
+  process.env.OPENROUTER_API_KEY_1 = 'synthetic-free-diagnosis';
+  globalThis.fetch = async (url, request) => {
+    assert.equal(String(url), 'https://openrouter.ai/api/v1/chat/completions');
+    const body = JSON.parse(request.body);
+    assert.equal(body.model, 'openrouter/free');
+    assert.equal(body.max_tokens, 3000);
+    assert.deepEqual(body.reasoning, { effort: 'minimal' });
+    assert.deepEqual(body.response_format, { type: 'json_object' });
+    return Response.json({ choices: [{ message: { content: JSON.stringify(diagnosis) }, finish_reason: 'stop' }] });
+  };
+  const diagnosed = await call({ stage: 'diagnose', job });
+  assert.equal(diagnosed.statusCode, 200, JSON.stringify(diagnosed.body));
+  assert.deepEqual(diagnosed.body.patch.diagnosis, diagnosis);
+});

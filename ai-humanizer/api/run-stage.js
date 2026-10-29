@@ -174,6 +174,9 @@ export default async function handler(req, res) {
     const providerArgs = { pools: config.pools, models: config.models, accountIds: config.accountIds };
     const jsonStage = (name, user, tier = 'fast', validator = (data) => parseStage(name, data)) => runJsonStagePooled({
       ...providerArgs, tier, system: PROMPTS[name].system, user, maxTokens: PROMPTS[name].maxTokens, validate: validator,
+      // The short editorial diagnosis must leave room for visible JSON when
+      // the free router selects a model that includes reasoning in max_tokens.
+      minimalReasoning: name === 'diagnose',
     });
     if (stage === 'extract') {
       if (job.pipeline_fingerprint === fingerprint && STAGE_SCHEMAS.extract.safeParse(job.extraction).success && job.chunks?.length === sourceChunks.length) return res.json({ stage, cached: true, chunk_count: job.chunks.length, progress: 15, patch: {} });

@@ -158,7 +158,7 @@ async function callGoogle({ key, model, system, user, maxTokens, json, timeout }
   };
 }
 
-async function callChat({ provider, key, model, system, user, maxTokens, json, timeout }) {
+async function callChat({ provider, key, model, system, user, maxTokens, json, timeout, minimalReasoning }) {
   const endpoint = provider === 'openrouter'
     ? 'https://openrouter.ai/api/v1/chat/completions'
     : 'https://api.sambanova.ai/v1/chat/completions';
@@ -171,6 +171,7 @@ async function callChat({ provider, key, model, system, user, maxTokens, json, t
       max_tokens: maxTokens || 4000,
       temperature: json ? 0 : 0.2,
       ...(json ? { response_format: { type: 'json_object' } } : {}),
+      ...(provider === 'openrouter' && minimalReasoning === true ? { reasoning: { effort: 'minimal' } } : {}),
     }),
   }, timeout);
   // A router can resolve to a different model. Retain that public identifier for
@@ -253,7 +254,7 @@ export function withStructuredRetryHint(error, hint) {
 }
 
 export async function pooledComplete({
-  pools, models, accountIds = {}, tier = 'fast', system, user, maxTokens, json = false, parseResponse,
+  pools, models, accountIds = {}, tier = 'fast', system, user, maxTokens, json = false, parseResponse, minimalReasoning = false,
 }) {
   // Use the same accuracy-focused order for structured and prose stages. A
   // rejected model on one provider must not hide a working configured fallback.
@@ -311,7 +312,7 @@ export async function pooledComplete({
     }
     const options = {
       key, model, system, user: retryStructuredOutput ? [user, STRUCTURED_RETRY_INSTRUCTION, validationRetryHint].filter(Boolean).join('\n\n') : user,
-      maxTokens, json, timeout: Math.min(remaining, limits.timeout),
+      maxTokens, json, minimalReasoning, timeout: Math.min(remaining, limits.timeout),
     };
     const started = Date.now();
     let parsingResponse = false;

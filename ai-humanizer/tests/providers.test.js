@@ -74,6 +74,17 @@ test('a resolved model suffix cannot turn a requested paid route into free usage
   assert.equal(result.model, 'openrouter/vendor/resolved-model:free');
 });
 
+test('minimal reasoning is opt-in and never sent to a different chat provider', async () => {
+  const bodies = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return Response.json({ choices: [{ message: { content: 'A complete rewrite.' }, finish_reason: 'stop' }] });
+  };
+  await pooledComplete({ ...loadProviderConfig({ OPENROUTER_API_KEY: 'synthetic-free' }), system: 'Edit.', user: 'Text.' });
+  await pooledComplete({ ...configured({ SAMBANOVA_API_KEY: 'synthetic-samba' }), system: 'Edit.', user: 'Text.', minimalReasoning: true });
+  assert.ok(bodies.every(body => !Object.hasOwn(body, 'reasoning')));
+});
+
 test('exhausted free-tier capacity never falls back to injected paid providers or model overrides', async () => {
   process.env.LLM_MAX_ATTEMPTS = '4';
   const config = loadProviderConfig({

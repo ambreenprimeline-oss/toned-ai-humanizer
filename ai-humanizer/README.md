@@ -49,6 +49,7 @@ Never prefix a secret with `VITE_`: those variables are intended for browser bun
 The browser drives individually bounded server requests: extraction → diagnosis → sequential section rewrites → lossless assembly → independent audit → up to two repairs and re-audits → finalization.
 
 - Structured model results are validated before advancing a stage. Invalid JSON, schema failures, missing extracted facts, and incomplete audit coverage trigger a fresh model attempt within the same four-attempt/120-second budget. Validation stays strict; exhausting that budget returns an error. Usage includes completed responses rejected by validation.
+- The short diagnosis stage requests OpenRouter's `reasoning.effort=minimal`, leaving more of its output allowance for the required JSON when the free router selects a reasoning model. Extraction and auditing retain their existing reasoning behavior. Provider limits or truncation can still cause a visible failure.
 - Source/settings fingerprints invalidate stale pipeline state.
 - Long paragraphs are split into bounded sections; assembly requires all sections.
 - The auditor sees the full original and rewrite, without the rewrite plan. Stable source IDs require coverage of each extracted occurrence, including repeated facts and uncertainty markers. It checks additions, omissions, certainty, and requested formatting.
