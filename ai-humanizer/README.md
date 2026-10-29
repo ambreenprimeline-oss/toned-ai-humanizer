@@ -48,7 +48,7 @@ Never prefix a secret with `VITE_`: those variables are intended for browser bun
 
 The browser drives individually bounded server requests: extraction → diagnosis → sequential section rewrites → lossless assembly → independent audit → up to two repairs and re-audits → finalization.
 
-- Structured model results are validated before advancing a stage.
+- Structured model results are validated before advancing a stage. Invalid JSON, schema failures, missing extracted facts, and incomplete audit coverage trigger a fresh model attempt within the same four-attempt/120-second budget. Validation stays strict; exhausting that budget returns an error. Usage includes completed responses rejected by validation.
 - Source/settings fingerprints invalidate stale pipeline state.
 - Long paragraphs are split into bounded sections; assembly requires all sections.
 - The auditor sees the full original and rewrite, without the rewrite plan. Stable source IDs require coverage of each extracted occurrence, including repeated facts and uncertainty markers. It checks additions, omissions, certainty, and requested formatting.
@@ -69,7 +69,7 @@ Before allowing public traffic:
 
 1. Keep `AI_PROVIDER_MODE=free` with a valid OpenRouter key for free-only routing, or explicitly opt in to configured mode with a valid provider credential and any model overrides in Vercel server environment settings.
 2. Configure **one** shared request-limit store: [Neon Postgres](#neon-postgres-setup) or [Upstash Redis](#upstash-redis-setup). Both offer Free plans with quotas. Use `RATE_LIMIT_STORE=neon` or `RATE_LIMIT_STORE=upstash` to make the choice explicit. Keep connection credentials server-only and allow outbound requests to the actual database hostname.
-3. Review `RATE_LIMIT_REQUESTS` (default 60 stage calls per client per 600 seconds) and `DAILY_STAGE_LIMIT` (default 1,000 stage calls globally per UTC day). These count requests, including retries, not documents or currency. A normal document uses multiple calls. Apply provider-side billing limits and deployment firewall/bot protection appropriate to your traffic.
+3. Review `RATE_LIMIT_REQUESTS` (default 60 stage calls per client per 600 seconds) and `DAILY_STAGE_LIMIT` (default 1,000 stage calls globally per UTC day). These count API stage requests, including browser retries, not documents or currency. Internal model retries share one stage admission and have their own bounded attempt budget. A normal document uses multiple calls. Apply provider-side billing limits and deployment firewall/bot protection appropriate to your traffic.
 4. Run checks below. Validate a representative rewrite with the actual model/key and review its audit. Test deployment routes and headers. A green health response alone does not validate a key, database connectivity, installed Neon schema, or output quality.
 5. Deploy through your normal release process. This setup does not publish or deploy the app.
 
@@ -172,9 +172,12 @@ See the [release verification report](../docs/browser-audit.md) for the browser 
 ```bash
 npm run check          # lint, Node regression tests, production build
 npm run test:e2e       # browser checks with mocked AI responses; no billable calls
+npm run evaluate:live  # manual real free-model check of the public deployment
 ```
 
-Install a Playwright Chromium browser using `npx playwright install chromium`, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium` when using a system browser. CI installs the pinned Playwright browser. Unit and browser tests exercise failure handling and deterministic fixtures, not statistical model accuracy. A real-provider evaluation set is still needed before making measured accuracy claims.
+Install a Playwright Chromium browser using `npx playwright install chromium`, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium` when using a system browser. CI installs the pinned Playwright browser. Unit and browser tests exercise failure handling and deterministic fixtures, not statistical model accuracy.
+
+The [manual rewrite evaluation](evaluation/README.md) submits a 187-word synthetic AI-style document through the real editor, provider, audit, review controls, clipboard, downloads, and mobile layout. It records the actual input/output, stage trace, constraint checks, and screenshots. It fails on incomplete auditing or unverified required checks and uses only free model routing. A passing sample cannot establish human authorship, detector performance, perfect accuracy, or broad model reliability; those require different evidence and a larger evaluation set.
 
 ## Provider availability and billing errors
 
