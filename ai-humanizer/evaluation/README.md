@@ -33,4 +33,4 @@ In a cloud environment whose Chromium cannot use its proxy trust configuration, 
 NODE_USE_ENV_PROXY=1 npm run evaluate:live -- --node-transport
 ```
 
-The report records this transport. No provider response is replaced and no TLS verification is disabled. The test uses the selected free-only model route; provider quotas and production request limits still apply. Allow up to 20 minutes for a full run including retries/repairs.
+The report records this transport. No provider response is replaced and no TLS verification is disabled. The test uses the selected free-only model route; provider quotas and production request limits still apply. Each API transport waits 310 seconds, matching the browser. The manual runner allows up to 60 minutes for the full pipeline, including sequential sections, retries, and repairs; use `--timeout-ms` for a shorter overall test deadline. This overall limit belongs to the manual test, not the editor's whole-document workflow.

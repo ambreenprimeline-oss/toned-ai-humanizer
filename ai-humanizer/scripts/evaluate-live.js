@@ -4,12 +4,15 @@ import path from 'node:path';
 import { chromium, expect } from '@playwright/test';
 import { AI_STYLE_SAMPLE } from '../evaluation/sample.js';
 import { evaluateRewrite } from '../evaluation/evaluate.js';
+import { API_REQUEST_TIMEOUT_MS } from '../shared/timeouts.js';
+
+const MAX_EVALUATION_TIMEOUT_MS = 3600000;
 
 const help = `Usage: node scripts/evaluate-live.js [options]
   --origin URL         App origin (default https://ai-humanizer-pearl.vercel.app)
   --report-dir PATH    Artifact directory (default evaluation-results/<run-id>)
   --node-transport     Forward unchanged HTTPS resources through TLS-verified Node fetch
-  --timeout-ms NUMBER  Overall pipeline wait, at most 1200000 ms (default 1200000)
+  --timeout-ms NUMBER  Overall pipeline wait, at most ${MAX_EVALUATION_TIMEOUT_MS} ms (default ${MAX_EVALUATION_TIMEOUT_MS})
   --help               Show this help without browser or model requests
 
 This manual test uses real app/API/model requests with a synthetic fixture.
@@ -17,7 +20,7 @@ It requires free-only mode and never mocks AI responses or disables TLS checks.
 `;
 
 function options(argv) {
-  const result = { origin: 'https://ai-humanizer-pearl.vercel.app', timeout: 1200000, nodeTransport: false };
+  const result = { origin: 'https://ai-humanizer-pearl.vercel.app', timeout: MAX_EVALUATION_TIMEOUT_MS, nodeTransport: false };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === '--help' || argument === '-h') return { help: true };
@@ -31,7 +34,7 @@ function options(argv) {
   const url = new URL(result.origin);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || (url.protocol !== 'https:' && !(local && url.protocol === 'http:'))) throw new Error('Use an HTTPS app origin or local HTTP origin without credentials, paths, or queries');
-  if (!Number.isSafeInteger(result.timeout) || result.timeout < 1000 || result.timeout > 1200000) throw new Error('Pipeline timeout must be between 1000 and 1200000 ms');
+  if (!Number.isSafeInteger(result.timeout) || result.timeout < 1000 || result.timeout > MAX_EVALUATION_TIMEOUT_MS) throw new Error(`Pipeline timeout must be between 1000 and ${MAX_EVALUATION_TIMEOUT_MS} ms`);
   result.origin = url.origin;
   result.scope = local ? 'local-development' : 'public-deployment';
   result.reportDir = path.resolve(result.reportDir || `evaluation-results/${new Date().toISOString().replace(/[:.]/g, '-')}`);
@@ -56,7 +59,7 @@ async function forwardVerifiedResources(page, origin, failures) {
     try {
       const response = await fetch(request.url(), {
         method: request.method(), headers: await request.allHeaders(),
-        body: request.postDataBuffer() || undefined, redirect: 'error', signal: AbortSignal.timeout(245000),
+        body: request.postDataBuffer() || undefined, redirect: 'error', signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
       });
       const headers = Object.fromEntries(response.headers);
       delete headers['content-encoding'];

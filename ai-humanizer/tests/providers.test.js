@@ -2,6 +2,8 @@ import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { LLMError, pooledComplete, runJsonStagePooled, deterministicChecks, auditProblems, splitChunks, requestLimits, withStructuredRetryHint, wrapUserText, MAX_CHUNK_CHARACTERS } from '../api/_pipeline.js';
 import { loadProviderConfig } from '../api/_config.js';
+import { readFile } from 'node:fs/promises';
+import { API_REQUEST_TIMEOUT_MS, MAX_MODEL_BUDGET_MS } from '../shared/timeouts.js';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -505,8 +507,56 @@ test('transport deadline covers reading a stalled response body', async () => {
 });
 
 test('retry budgets are bounded even for invalid or excessive environment overrides', () => {
-  assert.deepEqual(requestLimits({}), { timeout: 60000, total: 120000, attempts: 4 });
-  assert.deepEqual(requestLimits({ LLM_REQUEST_TIMEOUT_MS: '99999999', LLM_TOTAL_TIMEOUT_MS: '99999999', LLM_MAX_ATTEMPTS: '99999' }), { timeout: 60000, total: 120000, attempts: 4 });
+  assert.deepEqual(requestLimits({}), { timeout: 240000, total: 270000, attempts: 4 });
+  assert.deepEqual(requestLimits({ LLM_REQUEST_TIMEOUT_MS: '99999999', LLM_TOTAL_TIMEOUT_MS: '99999999', LLM_MAX_ATTEMPTS: '99999' }), { timeout: 270000, total: 270000, attempts: 4 });
+  assert.deepEqual(requestLimits({ LLM_REQUEST_TIMEOUT_MS: '', LLM_TOTAL_TIMEOUT_MS: ' ', LLM_MAX_ATTEMPTS: 'invalid' }), { timeout: 240000, total: 270000, attempts: 4 });
+  assert.deepEqual(requestLimits({ LLM_REQUEST_TIMEOUT_MS: '180000', LLM_TOTAL_TIMEOUT_MS: '240000', LLM_MAX_ATTEMPTS: '2' }), { timeout: 180000, total: 240000, attempts: 2 });
+});
+
+test('a model response after the former attempt and total deadlines completes successfully', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  let signal;
+  globalThis.fetch = (_url, init) => new Promise((resolve, reject) => {
+    signal = init.signal;
+    const timer = setTimeout(() => resolve(googleResponse('A complete long-document rewrite.')), 225000);
+    signal.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(new DOMException('aborted', 'AbortError'));
+    }, { once: true });
+  });
+  const waiting = pooledComplete(options());
+  t.mock.timers.tick(225000);
+  const result = await waiting;
+  assert.equal(result.text, 'A complete long-document rewrite.');
+  assert.equal(signal.aborted, false);
+});
+
+test('a stalled model response body remains bounded by the longer default attempt timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+  let signal;
+  let bodyStarted;
+  const ready = new Promise(resolve => { bodyStarted = resolve; });
+  globalThis.fetch = (_url, init) => {
+    signal = init.signal;
+    return { ok: true, json: () => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      bodyStarted();
+    }) };
+  };
+  const waiting = assert.rejects(pooledComplete(options()), error => error.code === 'timeout');
+  await ready;
+  t.mock.timers.tick(239999);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await waiting;
+  assert.equal(signal.aborted, true);
+});
+
+test('model and browser deadlines leave room around the deployed stage function limit', async () => {
+  const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
+  const functionLimit = config.functions['api/run-stage.js'].maxDuration * 1000;
+  assert.ok(MAX_MODEL_BUDGET_MS + 15000 < functionLimit, 'The Neon guard and response handling must fit after the model budget');
+  assert.ok(API_REQUEST_TIMEOUT_MS > functionLimit, 'The browser must wait long enough to receive a function response');
 });
 
 test('deterministic audit rejects numeric substrings and checks entire quotations', () => {

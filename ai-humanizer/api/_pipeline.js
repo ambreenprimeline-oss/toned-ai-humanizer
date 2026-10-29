@@ -2,6 +2,7 @@
  * Shared pipeline utilities for Vercel API routes.
  * Bounded provider calls, structured responses, and factual consistency checks.
  */
+import { DEFAULT_MODEL_TIMEOUT_MS, MAX_MODEL_BUDGET_MS } from '../shared/timeouts.js';
 
 // ─── LLM Error ────────────────────────────────────────────────────────────────
 
@@ -64,16 +65,18 @@ export class KeyPool {
 }
 
 // Each model call has a bounded total budget, including response-body reads and retries.
-// Two model calls can occur in a stage; the default keeps both below Vercel's 300s limit.
+// One model call (including retries) runs per stage. Reserve time for the
+// shared limiter and response handling below Vercel's 300-second limit.
 function boundedInt(value, fallback, min, max) {
+  if (value == null || String(value).trim() === '') return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.floor(number))) : fallback;
 }
 
 export function requestLimits(env = process.env) {
   return {
-    timeout: boundedInt(env.LLM_REQUEST_TIMEOUT_MS, 60000, 100, 60000),
-    total: boundedInt(env.LLM_TOTAL_TIMEOUT_MS, 120000, 100, 120000),
+    timeout: boundedInt(env.LLM_REQUEST_TIMEOUT_MS, DEFAULT_MODEL_TIMEOUT_MS, 100, MAX_MODEL_BUDGET_MS),
+    total: boundedInt(env.LLM_TOTAL_TIMEOUT_MS, MAX_MODEL_BUDGET_MS, 100, MAX_MODEL_BUDGET_MS),
     attempts: boundedInt(env.LLM_MAX_ATTEMPTS, 4, 1, 4),
   };
 }
